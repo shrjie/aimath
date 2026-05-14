@@ -1,19 +1,13 @@
-import Groq from "groq-sdk";
+import { GoogleGenAI, Type } from "@google/genai";
 
-let currentApiKey = process.env.GROQ_API_KEY || localStorage.getItem('groq_api_key') || '';
+let currentApiKey = localStorage.getItem('gemini_api_key') || process.env.GEMINI_API_KEY || '';
 
-let groq = new Groq({
-  apiKey: currentApiKey,
-  dangerouslyAllowBrowser: true 
-});
+let ai = new GoogleGenAI({ apiKey: currentApiKey });
 
 export function setApiKey(key: string) {
   currentApiKey = key;
-  localStorage.setItem('groq_api_key', key);
-  groq = new Groq({
-    apiKey: key,
-    dangerouslyAllowBrowser: true
-  });
+  localStorage.setItem('gemini_api_key', key);
+  ai = new GoogleGenAI({ apiKey: key });
 }
 
 export function getApiKey() {
@@ -25,18 +19,18 @@ export async function testConnection(): Promise<{ success: boolean; message: str
     return { success: false, message: "尚未設定 API Key" };
   }
   try {
-    const response = await groq.chat.completions.create({
-      model: "llama-3.3-70b-versatile",
-      messages: [{ role: "user", content: "hi" }],
-      max_tokens: 5
+    const response = await ai.models.generateContent({
+      model: "gemini-3-flash-preview",
+      contents: "hi",
+      config: { maxOutputTokens: 5 }
     });
-    if (response.choices && response.choices.length > 0) {
-      return { success: true, message: "連線成功！" };
+    if (response.text) {
+      return { success: true, message: "Gemini 連線成功！" };
     }
     return { success: false, message: "連線異常：未收到回應內容" };
   } catch (err: any) {
-    console.error("Connection test failed:", err);
-    return { success: false, message: `連線失敗：${err.message || '未知錯誤'}` };
+    console.error("Gemini connection test failed:", err);
+    return { success: false, message: `Gemini 連線失敗：${err.message || '未知錯誤'}` };
   }
 }
 
@@ -67,25 +61,26 @@ export interface GradingAnalysis {
 }
 
 export async function recognizeHandwriting(base64Data: string, mimeType: string = "image/jpeg"): Promise<string> {
+  if (!currentApiKey) {
+    throw new Error("尚未設定 Gemini API Key，請前往設定頁面輸入。");
+  }
   try {
     // We need to ensure the base64 is just the data part
     const base64Content = base64Data.includes(',') ? base64Data.split(',')[1] : base64Data;
     
-    console.log("Calling Groq OCR with model: llama-3.2-11b-vision-preview");
-    const response = await groq.chat.completions.create({
-      model: "llama-3.2-11b-vision-preview",
-      messages: [
+    console.log("Calling Gemini OCR with model: gemini-3-flash-preview");
+    const response = await ai.models.generateContent({
+      model: "gemini-3-flash-preview",
+      contents: [
         {
-          role: "user",
-          content: [
+          parts: [
             {
-              type: "text",
               text: "這是學生的作答內容，請精確辨識其中的文字內容與運算過程。只需輸出辨識出的文字內容。如果辨識不出任何內容，請回覆「[無法辨識]」。"
             },
             {
-              type: "image_url",
-              image_url: {
-                url: `data:${mimeType};base64,${base64Content}`
+              inlineData: {
+                data: base64Content,
+                mimeType: mimeType
               }
             }
           ]
@@ -93,15 +88,12 @@ export async function recognizeHandwriting(base64Data: string, mimeType: string 
       ]
     });
 
-    const text = response.choices[0]?.message?.content || "";
-    console.log("Groq OCR Result:", text);
+    const text = response.text || "";
+    console.log("Gemini OCR Result:", text);
     return text;
   } catch (err: any) {
-    console.error("Groq OCR Error:", err);
-    if (err.status === 401 || err.status === 403) {
-      throw new Error(`辨識失敗：Groq API 身份驗證失敗。\n\n請在右側選單的「Settings > Secrets」中，設定有效的「GROQ_API_KEY」。`);
-    }
-    throw new Error(`辨識失敗：Groq 辨識發生錯誤: ${err.message || '請檢查網路連線或 API 設定'}`);
+    console.error("Gemini OCR Error:", err);
+    throw new Error(`辨識失敗：Gemini 辨識發生錯誤: ${err.message || '請檢查網路連線或 API 設定'}`);
   }
 }
 
@@ -109,6 +101,9 @@ export async function gradeAnswer(
   question: QuestionData,
   studentAnswer: string
 ): Promise<GradingAnalysis> {
+  if (!currentApiKey) {
+    throw new Error("尚未設定 Gemini API Key，請前往設定頁面輸入。");
+  }
   const prompt = `
 你是一位專業的老師。請根據以下評分準則與標準答案，批改學生的答案。
 
@@ -128,36 +123,46 @@ ${question.commonErrors.join(', ')}
 ${studentAnswer}
 
 請嚴格對照各評分準則給分，並針對扣分原因提供具體回饋文字。
-最後將結果以 JSON 格式輸出，結構包含：
-{
-  "items": [{ "rubricDesc": string, "score": number, "feedback": string }],
-  "totalScore": number,
-  "genericFeedback": string,
-  "errorTypes": string[]
-}
-輸出必須只包含 JSON 本身，不要有其他描述。
-  `;
+`;
 
   try {
-    const response = await groq.chat.completions.create({
-      model: "llama-3.3-70b-versatile",
-      messages: [
-        {
-          role: "user",
-          content: prompt
+    const response = await ai.models.generateContent({
+      model: "gemini-3.1-pro-preview",
+      contents: prompt,
+      config: {
+        responseMimeType: "application/json",
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: {
+            items: {
+              type: Type.ARRAY,
+              items: {
+                type: Type.OBJECT,
+                properties: {
+                  rubricDesc: { type: Type.STRING },
+                  score: { type: Type.NUMBER },
+                  feedback: { type: Type.STRING }
+                },
+                required: ["rubricDesc", "score", "feedback"]
+              }
+            },
+            totalScore: { type: Type.NUMBER },
+            genericFeedback: { type: Type.STRING },
+            errorTypes: {
+              type: Type.ARRAY,
+              items: { type: Type.STRING }
+            }
+          },
+          required: ["items", "totalScore", "genericFeedback", "errorTypes"]
         }
-      ],
-      response_format: { type: "json_object" }
+      }
     });
 
-    const text = response.choices[0]?.message?.content || "{}";
+    const text = response.text || "{}";
     const result = JSON.parse(text);
     return result as GradingAnalysis;
   } catch (err: any) {
-    console.error("Groq Grading Error:", err);
-    if (err.status === 401 || err.status === 403) {
-      throw new Error(`批改失敗：Groq API 身份驗證失敗。\n\n請在右側選單的「Settings > Secrets」中，設定有效的「GROQ_API_KEY」。`);
-    }
-    throw new Error(`批改失敗：Groq 批改發生錯誤: ${err.message || '請再試一次'}`);
+    console.error("Gemini Grading Error:", err);
+    throw new Error(`批改失敗：Gemini 批改發生錯誤: ${err.message || '請再試一次'}`);
   }
 }

@@ -30,7 +30,6 @@ export default function TeacherDashboard({ user }: { user: User }) {
   useEffect(() => {
     const q = query(
       collection(db, 'exams'),
-      where('teacherId', '==', user.uid),
       orderBy('createdAt', 'desc')
     );
 
